@@ -21,9 +21,9 @@ var parseTests = []parseTest{
 	{`a`, `lit{a}`},
 	{`a.`, `cat{lit{a}dot{}}`},
 	{`a.b`, `cat{lit{a}dot{}lit{b}}`},
-	{`ab`, `str{ab}`},
+	{`ab`, `Str{ab}`},
 	{`a.b.c`, `cat{lit{a}dot{}lit{b}dot{}lit{c}}`},
-	{`abc`, `str{abc}`},
+	{`abc`, `Str{abc}`},
 	{`a|^`, `alt{lit{a}bol{}}`},
 	{`a|b`, `cc{0x61-0x62}`},
 	{`(a)`, `cap{lit{a}}`},
@@ -41,11 +41,11 @@ var parseTests = []parseTest{
 	{`a{2,3}?`, `nrep{2,3 lit{a}}`},
 	{`a{2,}?`, `nrep{2,-1 lit{a}}`},
 	// Malformed { } are treated as literals.
-	{`x{1001`, `str{x{1001}`},
-	{`x{9876543210`, `str{x{9876543210}`},
-	{`x{9876543210,`, `str{x{9876543210,}`},
-	{`x{2,1`, `str{x{2,1}`},
-	{`x{1,9876543210`, `str{x{1,9876543210}`},
+	{`x{1001`, `Str{x{1001}`},
+	{`x{9876543210`, `Str{x{9876543210}`},
+	{`x{9876543210,`, `Str{x{9876543210,}`},
+	{`x{2,1`, `Str{x{2,1}`},
+	{`x{1,9876543210`, `Str{x{1,9876543210}`},
 	{``, `emp{}`},
 	{`|`, `emp{}`}, // alt{emp{}emp{}} but got factored
 	{`|x|`, `alt{emp{}lit{x}emp{}}`},
@@ -71,9 +71,9 @@ var parseTests = []parseTest{
 	{`\-`, `lit{-}`},
 	{`-`, `lit{-}`},
 	{`\_`, `lit{_}`},
-	{`abc`, `str{abc}`},
-	{`abc|def`, `alt{str{abc}str{def}}`},
-	{`abc|def|ghi`, `alt{str{abc}str{def}str{ghi}}`},
+	{`abc`, `Str{abc}`},
+	{`abc|def`, `alt{Str{abc}Str{def}}`},
+	{`abc|def|ghi`, `alt{Str{abc}Str{def}Str{ghi}}`},
 
 	// Posix and Perl extensions
 	{`[[:lower:]]`, `cc{0x61-0x7a}`},
@@ -117,36 +117,36 @@ var parseTests = []parseTest{
 	{`[\x{41}-\x7a]\x61`, `cat{cc{0x41-0x7a}lit{a}}`},
 
 	// More interesting regular expressions.
-	{`a{,2}`, `str{a{,2}}`},
-	{`\.\^\$\\`, `str{.^$\}`},
+	{`a{,2}`, `Str{a{,2}}`},
+	{`\.\^\$\\`, `Str{.^$\}`},
 	{`[a-zABC]`, `cc{0x41-0x43 0x61-0x7a}`},
 	{`[^a]`, `cc{0x0-0x60 0x62-0x10ffff}`},
 	{`[α-ε☺]`, `cc{0x3b1-0x3b5 0x263a}`}, // utf-8
 	{`a*{`, `cat{star{lit{a}}lit{{}}`},
 
 	// Test precedences
-	{`(?:ab)*`, `star{str{ab}}`},
-	{`(ab)*`, `star{cap{str{ab}}}`},
-	{`ab|cd`, `alt{str{ab}str{cd}}`},
+	{`(?:ab)*`, `star{Str{ab}}`},
+	{`(ab)*`, `star{cap{Str{ab}}}`},
+	{`ab|cd`, `alt{Str{ab}Str{cd}}`},
 	{`a(b|c)d`, `cat{lit{a}cap{cc{0x62-0x63}}lit{d}}`},
 
 	// Test flattening.
 	{`(?:a)`, `lit{a}`},
-	{`(?:ab)(?:cd)`, `str{abcd}`},
+	{`(?:ab)(?:cd)`, `Str{abcd}`},
 	{`(?:a+b+)(?:c+d+)`, `cat{plus{lit{a}}plus{lit{b}}plus{lit{c}}plus{lit{d}}}`},
 	{`(?:a+|b+)|(?:c+|d+)`, `alt{plus{lit{a}}plus{lit{b}}plus{lit{c}}plus{lit{d}}}`},
 	{`(?:a|b)|(?:c|d)`, `cc{0x61-0x64}`},
 	{`a|.`, `dot{}`},
 	{`.|a`, `dot{}`},
-	{`(?:[abc]|A|Z|hello|world)`, `alt{cc{0x41 0x5a 0x61-0x63}str{hello}str{world}}`},
+	{`(?:[abc]|A|Z|hello|world)`, `alt{cc{0x41 0x5a 0x61-0x63}Str{hello}Str{world}}`},
 	{`(?:[abc]|A|Z)`, `cc{0x41 0x5a 0x61-0x63}`},
 
 	// Test Perl quoted literals
-	{`\Q+|*?{[\E`, `str{+|*?{[}`},
+	{`\Q+|*?{[\E`, `Str{+|*?{[}`},
 	{`\Q+\E+`, `plus{lit{+}}`},
 	{`\Qab\E+`, `cat{lit{a}plus{lit{b}}}`},
 	{`\Q\\E`, `lit{\}`},
-	{`\Q\\\E`, `str{\\}`},
+	{`\Q\\\E`, `Str{\\}`},
 
 	// Test Perl \A and \z
 	{`(?m)^`, `bol{}`},
@@ -167,11 +167,11 @@ var parseTests = []parseTest{
 	{`[Δδ]`, `litfold{Δ}`},
 
 	// Strings
-	{`abcde`, `str{abcde}`},
-	{`[Aa][Bb]cd`, `cat{strfold{AB}str{cd}}`},
+	{`abcde`, `Str{abcde}`},
+	{`[Aa][Bb]cd`, `cat{Strfold{AB}Str{cd}}`},
 
 	// Factoring.
-	{`abc|abd|aef|bcx|bcy`, `alt{cat{lit{a}alt{cat{lit{b}cc{0x63-0x64}}str{ef}}}cat{str{bc}cc{0x78-0x79}}}`},
+	{`abc|abd|aef|bcx|bcy`, `alt{cat{lit{a}alt{cat{lit{b}cc{0x63-0x64}}Str{ef}}}cat{Str{bc}cc{0x78-0x79}}}`},
 	{`ax+y|ax+z|ay+w`, `cat{lit{a}alt{cat{plus{lit{x}}lit{y}}cat{plus{lit{x}}lit{z}}cat{plus{lit{y}}lit{w}}}}`},
 
 	// Bug fixes.
@@ -188,13 +188,13 @@ var parseTests = []parseTest{
 	{`[\s\S]a`, `cat{cc{0x0-0x10ffff}lit{a}}`},
 
 	// RE2 prefix_tests
-	{`abc|abd`, `cat{str{ab}cc{0x63-0x64}}`},
-	{`a(?:b)c|abd`, `cat{str{ab}cc{0x63-0x64}}`},
+	{`abc|abd`, `cat{Str{ab}cc{0x63-0x64}}`},
+	{`a(?:b)c|abd`, `cat{Str{ab}cc{0x63-0x64}}`},
 	{`abc|abd|aef|bcx|bcy`,
-		`alt{cat{lit{a}alt{cat{lit{b}cc{0x63-0x64}}str{ef}}}` +
-			`cat{str{bc}cc{0x78-0x79}}}`},
-	{`abc|x|abd`, `alt{str{abc}lit{x}str{abd}}`},
-	{`(?i)abc|ABD`, `cat{strfold{AB}cc{0x43-0x44 0x63-0x64}}`},
+		`alt{cat{lit{a}alt{cat{lit{b}cc{0x63-0x64}}Str{ef}}}` +
+			`cat{Str{bc}cc{0x78-0x79}}}`},
+	{`abc|x|abd`, `alt{Str{abc}lit{x}Str{abd}}`},
+	{`(?i)abc|ABD`, `cat{Strfold{AB}cc{0x43-0x44 0x63-0x64}}`},
 	{`[ab]c|[ab]d`, `cat{cc{0x61-0x62}cc{0x63-0x64}}`},
 	{`.c|.d`, `cat{dot{}cc{0x63-0x64}}`},
 	{`x{2}|x{2}[0-9]`,
@@ -207,6 +207,11 @@ var parseTests = []parseTest{
 	// Valid repetitions.
 	{`((((((((((x{2}){2}){2}){2}){2}){2}){2}){2}){2}))`, ``},
 	{`((((((((((x{1}){2}){2}){2}){2}){2}){2}){2}){2}){2})`, ``},
+
+	// Valid nesting.
+	{strings.Repeat("(", 999) + strings.Repeat(")", 999), ``},
+	{strings.Repeat("(?:", 999) + strings.Repeat(")*", 999), ``},
+	{"(" + strings.Repeat("|", 12345) + ")", ``}, // not nested at all
 }
 
 const testFlags = MatchNL | PerlX | UnicodeGroups
@@ -216,7 +221,7 @@ func TestParseSimple(t *testing.T) {
 }
 
 var foldcaseTests = []parseTest{
-	{`AbCdE`, `strfold{ABCDE}`},
+	{`AbCdE`, `Strfold{ABCDE}`},
 	{`[Aa]`, `litfold{A}`},
 	{`a`, `litfold{A}`},
 
@@ -232,7 +237,7 @@ func TestParseFoldCase(t *testing.T) {
 }
 
 var literalTests = []parseTest{
-	{"(|)^$.[*+?]{5,10},\\", "str{(|)^$.[*+?]{5,10},\\}"},
+	{"(|)^$.[*+?]{5,10},\\", "Str{(|)^$.[*+?]{5,10},\\}"},
 }
 
 func TestParseLiteral(t *testing.T) {
@@ -327,7 +332,7 @@ func dumpRegexp(b *strings.Builder, re *Regexp) {
 			b.WriteString(opNames[re.Op])
 		case OpLiteral:
 			if len(re.Rune) > 1 {
-				b.WriteString("str")
+				b.WriteString("Str")
 			} else {
 				b.WriteString("lit")
 			}
@@ -482,6 +487,8 @@ var invalidRegexps = []string{
 	`a{100000}`,
 	`a{100000,}`,
 	"((((((((((x{2}){2}){2}){2}){2}){2}){2}){2}){2}){2})",
+	strings.Repeat("(", 1000) + strings.Repeat(")", 1000),
+	strings.Repeat("(?:", 1000) + strings.Repeat(")*", 1000),
 	`\Q\E*`,
 }
 

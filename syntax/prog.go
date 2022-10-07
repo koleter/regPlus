@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Compiled program.
@@ -32,9 +33,12 @@ const (
 	InstFail
 	InstNop
 	InstRune
-	InstRune1 // 只匹配一个字符
+	InstRune1
 	InstRuneAny
-	InstRuneAnyNotNL // 这里是一个.,不匹配换行
+	InstRuneAnyNotNL
+
+	InstStringVar
+	InstRegVar
 )
 
 var instOpNames = []string{
@@ -111,9 +115,10 @@ func IsWordChar(r rune) bool {
 // An Inst is a single instruction in a regular expression program.
 type Inst struct {
 	Op   InstOp
-	Out  uint32 // all but InstMatch, InstFail		指向下一个Inst的下标
+	Out  uint32 // all but InstMatch, InstFail
 	Arg  uint32 // InstAlt, InstAltMatch, InstCapture, InstEmptyWidth
 	Rune []rune
+	Str  string
 }
 
 func (p *Prog) String() string {
@@ -154,7 +159,7 @@ func (p *Prog) Prefix() (prefix string, complete bool) {
 
 	// Have prefix; gather characters.
 	var buf strings.Builder
-	for i.op() == InstRune && len(i.Rune) == 1 && Flags(i.Arg)&FoldCase == 0 {
+	for i.op() == InstRune && len(i.Rune) == 1 && Flags(i.Arg)&FoldCase == 0 && i.Rune[0] != utf8.RuneError {
 		buf.WriteRune(i.Rune[0])
 		i = p.skipNop(i.Out)
 	}

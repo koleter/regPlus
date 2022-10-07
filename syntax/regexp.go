@@ -15,8 +15,8 @@ import (
 
 // A Regexp is a node in a regular expression syntax tree.
 type Regexp struct {
-	Op       Op         // operator
-	Flags    Flags      // 匹配的模式
+	Op       Op // operator
+	Flags    Flags
 	Sub      []*Regexp  // subexpressions, if any
 	Sub0     [1]*Regexp // storage for short Sub
 	Rune     []rune     // matched runes, for OpLiteral, OpCharClass
@@ -24,6 +24,7 @@ type Regexp struct {
 	Min, Max int        // min, max for OpRepeat
 	Cap      int        // capturing index, for OpCapture
 	Name     string     // capturing name, for OpCapture
+	Var      string
 }
 
 //go:generate stringer -type Op -trimprefix Op
@@ -38,8 +39,8 @@ type Op uint8
 const (
 	OpNoMatch        Op = 1 + iota // matches no strings
 	OpEmptyMatch                   // matches empty string
-	OpLiteral                      // matches Runes sequence	// 字符串
-	OpCharClass                    // matches Runes interpreted as range pair list		每2个元素视为一个匹配的范围
+	OpLiteral                      // matches Runes sequence
+	OpCharClass                    // matches Runes interpreted as range pair list
 	OpAnyCharNotNL                 // matches any character except newline
 	OpAnyChar                      // matches any character
 	OpBeginLine                    // matches empty string at beginning of line
@@ -55,6 +56,9 @@ const (
 	OpRepeat                       // matches Sub[0] at least Min times, at most Max (Max == -1 is no limit)
 	OpConcat                       // matches concatenation of Subs
 	OpAlternate                    // matches alternation of Subs
+
+	OpStringVar
+	OpRegVar
 )
 
 const opPseudo Op = 128 // where pseudo-ops start

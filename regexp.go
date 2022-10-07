@@ -20,6 +20,8 @@
 // or any book about automata theory.
 //
 // All characters are UTF-8-encoded code points.
+// Following utf8.DecodeRune, each byte of an invalid UTF-8 sequence
+// is treated as if it encoded utf8.RuneError (U+FFFD).
 //
 // There are 16 methods of Regexp that match a regular expression and identify
 // the matched text. Their names are matched by this regular expression:
@@ -40,7 +42,7 @@
 // successive submatches of the expression. Submatches are matches of
 // parenthesized subexpressions (also known as capturing groups) within the
 // regular expression, numbered from left to right in order of opening
-// parenthesis. Submatch 0 is the match of the entire expression, submatch 1
+// parenthesis. Submatch 0 is the match of the entire expression, submatch 1 is
 // the match of the first parenthesized subexpression, and so on.
 //
 // If 'Index' is present, matches and submatches are identified by byte index
@@ -68,6 +70,7 @@ package regexp
 import (
 	"bytes"
 	"io"
+	"math"
 	"regPlus/syntax"
 	"strconv"
 	"strings"
@@ -99,6 +102,86 @@ type Regexp struct {
 	// This field can be modified by the Longest method,
 	// but it is otherwise read-only.
 	longest bool // whether regexp prefers leftmost-longest match
+
+	stringVar map[string]*StringTreeNode
+	regVar    map[string]*RegNode
+}
+
+type RegNode struct {
+	l               List
+	min, max, count int
+}
+
+func (re *Regexp) RegisterRegVar(variable string, regs ...*Regexp) {
+	regNode := re.getRegNode(variable)
+	for _, reg := range regs {
+		regNode.l.PushBack(reg)
+	}
+}
+
+func (re *Regexp) SetRegVarLimit(variable string, min, max int) {
+	regNode := re.regVar[variable]
+	if regNode == nil {
+		panic("reg var " + variable + " is unregistered")
+	}
+	if min > max {
+		panic("Invalid limit: min can't bigger than max")
+	}
+	regNode.min = min
+	regNode.max = max
+}
+
+func (re *Regexp) getRegNode(variable string) *RegNode {
+	if re.regVar == nil {
+		re.regVar = map[string]*RegNode{}
+	}
+	regNode := re.regVar[variable]
+	if regNode == nil {
+		regNode = &RegNode{l: List{}, max: math.MaxInt64}
+		re.regVar[variable] = regNode
+	}
+	return regNode
+}
+
+type StringTreeNode struct {
+	root            *node
+	min, max, count int
+}
+
+func (re *Regexp) RegisterStringVar(variable string, strs ...string) {
+	treeNode := re.getStringTreeNode(variable)
+	treeNode.root.Insert(strs...)
+}
+
+func (re *Regexp) SetStringVarLimit(variable string, min, max int) {
+	treeNode := re.stringVar[variable]
+	if treeNode == nil {
+		panic("string var " + variable + " is unregistered")
+	}
+	if min > max {
+		panic("Invalid limit: min can't bigger than max")
+	}
+	treeNode.min = min
+	treeNode.max = max
+}
+
+func (re *Regexp) getStringTreeNode(variable string) *StringTreeNode {
+	if re.stringVar == nil {
+		re.stringVar = map[string]*StringTreeNode{}
+	}
+	treeNode := re.stringVar[variable]
+	if treeNode == nil {
+		treeNode = &StringTreeNode{root: &node{}, max: math.MaxInt64}
+		re.stringVar[variable] = treeNode
+	}
+	return treeNode
+}
+
+func (re *Regexp) RegisterStringVarByMap(variable string, m map[string]int) {
+	treeNode := re.getStringTreeNode(variable)
+	for str, count := range m {
+		treeNode.root.InsertWithTimes(str, count)
+	}
 }
 
 // String returns the source text used to compile the regular expression.
@@ -276,7 +359,11 @@ func minInputLen(re *syntax.Regexp) int {
 	case syntax.OpLiteral:
 		l := 0
 		for _, r := range re.Rune {
-			l += utf8.RuneLen(r)
+			if r == utf8.RuneError {
+				l++
+			} else {
+				l += utf8.RuneLen(r)
+			}
 		}
 		return l
 	case syntax.OpCapture, syntax.OpPlus:
@@ -377,7 +464,7 @@ type input interface {
 
 // inputString scans a string.
 type inputString struct {
-	str string // 扫描的字符串
+	str string
 }
 
 func (i *inputString) step(pos int) (rune, int) {
@@ -821,7 +908,7 @@ func (re *Regexp) Find(b []byte) []byte {
 	return b[a[0]:a[1]:a[1]]
 }
 
-// FindIndex returns a two-element slice of integers defining the location of
+// FindIndex returns a two-Element slice of integers defining the location of
 // the leftmost match in b of the regular expression. The match itself is at
 // b[loc[0]:loc[1]].
 // A return value of nil indicates no match.
@@ -847,7 +934,7 @@ func (re *Regexp) FindString(s string) string {
 	return s[a[0]:a[1]]
 }
 
-// FindStringIndex returns a two-element slice of integers defining the
+// FindStringIndex returns a two-Element slice of integers defining the
 // location of the leftmost match in s of the regular expression. The match
 // itself is at s[loc[0]:loc[1]].
 // A return value of nil indicates no match.
@@ -859,7 +946,7 @@ func (re *Regexp) FindStringIndex(s string) (loc []int) {
 	return a[0:2]
 }
 
-// FindReaderIndex returns a two-element slice of integers defining the
+// FindReaderIndex returns a two-Element slice of integers defining the
 // location of the leftmost match of the regular expression in text read from
 // the RuneReader. The match text was found in the input stream at
 // byte offset loc[0] through loc[1]-1.
@@ -922,23 +1009,22 @@ func (re *Regexp) ExpandString(dst []byte, template string, src string, match []
 
 func (re *Regexp) expand(dst []byte, template string, bsrc []byte, src string, match []int) []byte {
 	for len(template) > 0 {
-		i := strings.Index(template, "$")
-		if i < 0 {
+		before, after, ok := strings.Cut(template, "$")
+		if !ok {
 			break
 		}
-		dst = append(dst, template[:i]...)
-		template = template[i:]
-		if len(template) > 1 && template[1] == '$' {
+		dst = append(dst, before...)
+		template = after
+		if template != "" && template[0] == '$' {
 			// Treat $$ as $.
 			dst = append(dst, '$')
-			template = template[2:]
+			template = template[1:]
 			continue
 		}
 		name, num, rest, ok := extract(template)
 		if !ok {
 			// Malformed; treat $ as raw text.
 			dst = append(dst, '$')
-			template = template[1:]
 			continue
 		}
 		template = rest
@@ -967,17 +1053,16 @@ func (re *Regexp) expand(dst []byte, template string, bsrc []byte, src string, m
 	return dst
 }
 
-// extract returns the name from a leading "$name" or "${name}" in str.
+// extract returns the name from a leading "name" or "{name}" in str.
+// (The $ has already been removed by the caller.)
 // If it is a number, extract returns num set to that number; otherwise num = -1.
 func extract(str string) (name string, num int, rest string, ok bool) {
-	if len(str) < 2 || str[0] != '$' {
+	if str == "" {
 		return
 	}
 	brace := false
-	if str[1] == '{' {
+	if str[0] == '{' {
 		brace = true
-		str = str[2:]
-	} else {
 		str = str[1:]
 	}
 	i := 0
@@ -1198,7 +1283,7 @@ func (re *Regexp) FindAllStringSubmatch(s string, n int) [][]string {
 		}
 		slice := make([]string, len(match)/2)
 		for j := range slice {
-			if match[2*j] >= 0 { // 匹配的起始坐标是存在的
+			if match[2*j] >= 0 {
 				slice[j] = s[match[2*j]:match[2*j+1]]
 			}
 		}
@@ -1273,4 +1358,10 @@ func (re *Regexp) Split(s string, n int) []string {
 	}
 
 	return strings
+}
+
+func (re *Regexp) reset() {
+	for _, node := range re.stringVar {
+		node.count = 0
+	}
 }

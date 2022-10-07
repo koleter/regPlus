@@ -16,7 +16,6 @@ package regexp
 
 import (
 	"regPlus/syntax"
-	"sync"
 )
 
 // A job is an entry on the backtracker's job stack. It holds
@@ -25,6 +24,9 @@ type job struct {
 	pc  uint32
 	arg bool
 	pos int
+
+	aux interface{}
+	f   func()
 }
 
 const (
@@ -35,8 +37,8 @@ const (
 
 // bitState holds state for the backtracker.
 type bitState struct {
-	end      int   // 扫描的字符串的最后一个字符的下标
-	cap      []int // 应该是用来保存捕获的组的
+	end      int
+	cap      []int
 	matchcap []int
 	jobs     []job
 	visited  []uint32
@@ -44,19 +46,18 @@ type bitState struct {
 	inputs inputs
 }
 
-var bitStatePool sync.Pool
+//var bitStatePool sync.Pool
 
-func newBitState() *bitState {
-	b, ok := bitStatePool.Get().(*bitState)
-	if !ok {
-		b = new(bitState)
-	}
-	return b
+func newBitState(re *Regexp) *bitState {
+	return new(bitState)
 }
 
 func freeBitState(b *bitState) {
-	b.inputs.clear()
-	bitStatePool.Put(b)
+	for _, job := range b.jobs {
+		if job.f != nil {
+			job.f()
+		}
+	}
 }
 
 // maxBitStateLen returns the maximum length of a string to search with
@@ -118,8 +119,8 @@ func (b *bitState) reset(prog *syntax.Prog, end int, ncap int) {
 // shouldVisit reports whether the combination of (pc, pos) has not
 // been visited yet.
 func (b *bitState) shouldVisit(pc uint32, pos int) bool {
-	n := uint(int(pc)*(b.end+1) + pos)                          // 指令以及字符所对应的b.visited中的bit位
-	if b.visited[n/visitedBits]&(1<<(n&(visitedBits-1))) != 0 { // 当前操作对应的字符位置并没有进行过
+	n := uint(int(pc)*(b.end+1) + pos)
+	if b.visited[n/visitedBits]&(1<<(n&(visitedBits-1))) != 0 {
 		return false
 	}
 	b.visited[n/visitedBits] |= 1 << (n & (visitedBits - 1))
@@ -141,13 +142,23 @@ func (re *Regexp) tryBacktrack(b *bitState, i input, pc uint32, pos int) bool {
 	longest := re.longest
 
 	b.push(re, pc, pos, false)
+	return re.run(b, i, longest)
+}
+
+func (re *Regexp) run(b *bitState, i input, longest bool) bool {
+Loop:
 	for len(b.jobs) > 0 {
-		l := len(b.jobs) - 1 // 弹出一个job
+		l := len(b.jobs) - 1
 		// Pop job off the stack.
-		pc := b.jobs[l].pc
-		pos := b.jobs[l].pos
-		arg := b.jobs[l].arg
+		curjob := b.jobs[l]
 		b.jobs = b.jobs[:l]
+		if curjob.f != nil {
+			curjob.f()
+			continue
+		}
+		pc := curjob.pc
+		pos := curjob.pos
+		arg := curjob.arg
 
 		// Optimization: rather than push and pop,
 		// code that is going to Push and continue
@@ -163,7 +174,7 @@ func (re *Regexp) tryBacktrack(b *bitState, i input, pc uint32, pos int) bool {
 		}
 	Skip:
 
-		inst := re.prog.Inst[pc] // 获取对应的操作
+		inst := re.prog.Inst[pc]
 
 		switch inst.Op {
 		default:
@@ -223,7 +234,7 @@ func (re *Regexp) tryBacktrack(b *bitState, i input, pc uint32, pos int) bool {
 			pc = inst.Out
 			goto CheckAndLoop
 
-		case syntax.InstRuneAnyNotNL: // 匹配除换行以外的所有字符
+		case syntax.InstRuneAnyNotNL:
 			r, width := i.step(pos)
 			if r == '\n' || r == endOfText {
 				continue
@@ -269,6 +280,12 @@ func (re *Regexp) tryBacktrack(b *bitState, i input, pc uint32, pos int) bool {
 			goto CheckAndLoop
 
 		case syntax.InstMatch:
+			for _, treeNode := range re.stringVar {
+				if treeNode.count < treeNode.min {
+					continue Loop
+				}
+			}
+
 			// We found a match. If the caller doesn't care
 			// where the match is, no point going further.
 			if len(b.cap) == 0 {
@@ -297,6 +314,90 @@ func (re *Regexp) tryBacktrack(b *bitState, i input, pc uint32, pos int) bool {
 
 			// Otherwise, continue on in hope of a longer match.
 			continue
+		case syntax.InstStringVar:
+			if arg {
+				arg = false
+				node := curjob.aux.(*node)
+				for r, width := i.step(pos); r != endOfText; r, width = i.step(pos) {
+					node = node.Next[r]
+					if node == nil {
+						continue Loop
+					}
+					pos += width
+					if node.Cnt > 0 {
+						node.Cnt--
+						b.jobs = append(b.jobs, job{pc: pc, arg: true, pos: pos, aux: node})
+						b.jobs = append(b.jobs, job{f: func() {
+							node.Cnt++
+						}})
+						pc = inst.Out
+						goto CheckAndLoop
+					}
+				}
+			} else {
+				treeNode := re.stringVar[inst.Str]
+				if treeNode == nil {
+					panic("string var " + inst.Str + " is unregistered")
+				}
+				if treeNode.count >= treeNode.max {
+					continue
+				}
+				treeNode.count++
+				b.jobs = append(b.jobs, job{f: func() {
+					treeNode.count--
+				}})
+				b.jobs = append(b.jobs, job{pc: pc, arg: true, pos: pos, aux: treeNode.root})
+			}
+			continue
+		case syntax.InstRegVar:
+			if arg {
+				arg = false
+				switch node := curjob.aux.(type) {
+				case *Element:
+					for ; node != nil; node = node.Next() {
+						regexp := node.Value.(*Regexp)
+						bit := new(bitState)
+						bit.reset(regexp.prog, b.end-pos, 2)
+						if !regexp.run(bit, i, longest) {
+							continue
+						}
+						b.jobs = append(b.jobs, job{pc: pc, arg: true, pos: pos, aux: node.Next()})
+
+						if prev := node.Prev(); prev != nil {
+							b.jobs = append(b.jobs, job{f: func() {
+								prev.InsertElementAfter(node)
+							}})
+						} else if next := node.Next(); next != nil {
+							b.jobs = append(b.jobs, job{f: func() {
+								next.InsertElementBefore(node)
+							}})
+						} else {
+							l := node.list
+							b.jobs = append(b.jobs, job{f: func() {
+								l.root.InsertElementBefore(node)
+							}})
+						}
+						node.RemoveSelf()
+						pc = inst.Out
+						pos = bit.matchcap[1]
+						goto CheckAndLoop
+					}
+				}
+			} else {
+				regNode := re.regVar[inst.Str]
+				if regNode == nil {
+					panic("string var " + inst.Str + " is unregistered")
+				}
+				if regNode.count >= regNode.max {
+					continue
+				}
+				regNode.count++
+				b.jobs = append(b.jobs, job{f: func() {
+					regNode.count--
+				}})
+				b.jobs = append(b.jobs, job{pc: pc, arg: true, pos: pos, aux: regNode.l.Front()})
+			}
+			continue
 		}
 	}
 
@@ -314,7 +415,7 @@ func (re *Regexp) backtrack(ib []byte, is string, pos int, ncap int, dstCap []in
 		return nil
 	}
 
-	b := newBitState()
+	b := newBitState(re)
 	i, end := b.inputs.init(nil, ib, is)
 	b.reset(re.prog, end, ncap)
 
@@ -340,11 +441,11 @@ func (re *Regexp) backtrack(ib []byte, is string, pos int, ncap int, dstCap []in
 			if len(re.prefix) > 0 {
 				// Match requires literal prefix; fast search for it.
 				advance := i.index(re, pos)
-				if advance < 0 { // 以后没有可以匹配的字符串了
+				if advance < 0 {
 					freeBitState(b)
 					return nil
 				}
-				pos += advance // 调整index
+				pos += advance
 			}
 
 			if len(b.cap) > 0 {

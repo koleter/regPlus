@@ -43,6 +43,11 @@ const (
 	ErrMissingRepeatArgument ErrorCode = "missing argument to repetition operator"
 	ErrTrailingBackslash     ErrorCode = "trailing backslash at end of expression"
 	ErrUnexpectedParen       ErrorCode = "unexpected )"
+
+	ErrMissingBrace           ErrorCode = "missing closing }"
+	ErrEmptyStringVar         ErrorCode = "string variable can not be empty string"
+	ErrInvalidStringVar       ErrorCode = "invalid string variable"
+	ErrInvalidStringVarBounds ErrorCode = "invalid string variable bounds"
 )
 
 func (e ErrorCode) String() string {
@@ -72,17 +77,33 @@ const (
 
 // Pseudo-ops for parsing stack.
 const (
-	opLeftParen   = opPseudo + iota // (
-	opVerticalBar                   // |符号
+	opLeftParen = opPseudo + iota
+	opVerticalBar
 )
+
+// maxHeight is the maximum height of a regexp parse tree.
+// It is somewhat arbitrarily chosen, but the idea is to be large enough
+// that no one will actually hit in real use but at the same time small enough
+// that recursion on the Regexp tree will not hit the 1GB Go stack limit.
+// The maximum amount of stack for a single recursive frame is probably
+// closer to 1kB, so this could potentially be raised, but it seems unlikely
+// that people have regexps nested even this deeply.
+// We ran a test on Google's C++ code base and turned up only
+// a single use case with depth > 100; it had depth 128.
+// Using depth 1000 should be plenty of margin.
+// As an optimization, we don't even bother calculating heights
+// until we've allocated at least maxHeight Regexp structures.
+const maxHeight = 1000
 
 type parser struct {
 	flags       Flags     // parse mode flags
 	stack       []*Regexp // stack of parsed expressions
-	free        *Regexp   // 相当于一块缓存,减少Regexp的堆内存申请次数
-	numCap      int       // number of capturing groups seen
-	wholeRegexp string    // 匹配的整个正则表达式
-	tmpClass    []rune    // temporary char class work space
+	free        *Regexp
+	numCap      int // number of capturing groups seen
+	wholeRegexp string
+	tmpClass    []rune          // temporary char class work space
+	numRegexp   int             // number of regexps allocated
+	height      map[*Regexp]int // regexp height for height limit check
 }
 
 func (p *parser) newRegexp(op Op) *Regexp {
@@ -92,21 +113,57 @@ func (p *parser) newRegexp(op Op) *Regexp {
 		*re = Regexp{}
 	} else {
 		re = new(Regexp)
+		p.numRegexp++
 	}
 	re.Op = op
 	return re
 }
 
 func (p *parser) reuse(re *Regexp) {
+	if p.height != nil {
+		delete(p.height, re)
+	}
 	re.Sub0[0] = p.free
 	p.free = re
+}
+
+func (p *parser) checkHeight(re *Regexp) {
+	if p.numRegexp < maxHeight {
+		return
+	}
+	if p.height == nil {
+		p.height = make(map[*Regexp]int)
+		for _, re := range p.stack {
+			p.checkHeight(re)
+		}
+	}
+	if p.calcHeight(re, true) > maxHeight {
+		panic(ErrInternalError)
+	}
+}
+
+func (p *parser) calcHeight(re *Regexp, force bool) int {
+	if !force {
+		if h, ok := p.height[re]; ok {
+			return h
+		}
+	}
+	h := 1
+	for _, sub := range re.Sub {
+		hsub := p.calcHeight(sub, false)
+		if h < 1+hsub {
+			h = 1 + hsub
+		}
+	}
+	p.height[re] = h
+	return h
 }
 
 // Parse stack manipulation.
 
 // push pushes the regexp re onto the parse stack and returns the regexp.
 func (p *parser) push(re *Regexp) *Regexp {
-	if re.Op == OpCharClass && len(re.Rune) == 2 && re.Rune[0] == re.Rune[1] { // 两个字符都是一样的
+	if re.Op == OpCharClass && len(re.Rune) == 2 && re.Rune[0] == re.Rune[1] {
 		// Single rune.
 		if p.maybeConcat(re.Rune[0], p.flags&^FoldCase) {
 			return nil
@@ -114,7 +171,7 @@ func (p *parser) push(re *Regexp) *Regexp {
 		re.Op = OpLiteral
 		re.Rune = re.Rune[:1]
 		re.Flags = p.flags &^ FoldCase
-	} else if re.Op == OpCharClass && len(re.Rune) == 4 && // 有两个范围匹配,且第一个范围与第二个范围都只表示一个字符且是对应的大小写字母
+	} else if re.Op == OpCharClass && len(re.Rune) == 4 &&
 		re.Rune[0] == re.Rune[1] && re.Rune[2] == re.Rune[3] &&
 		unicode.SimpleFold(re.Rune[0]) == re.Rune[2] &&
 		unicode.SimpleFold(re.Rune[2]) == re.Rune[0] ||
@@ -123,7 +180,7 @@ func (p *parser) push(re *Regexp) *Regexp {
 			unicode.SimpleFold(re.Rune[0]) == re.Rune[1] &&
 			unicode.SimpleFold(re.Rune[1]) == re.Rune[0] {
 		// Case-insensitive rune like [Aa] or [Δδ].
-		if p.maybeConcat(re.Rune[0], p.flags|FoldCase) { // 尝试将栈上的两个正则节点与re.Rune[0]进行合并
+		if p.maybeConcat(re.Rune[0], p.flags|FoldCase) {
 			return nil
 		}
 
@@ -137,6 +194,7 @@ func (p *parser) push(re *Regexp) *Regexp {
 	}
 
 	p.stack = append(p.stack, re)
+	p.checkHeight(re)
 	return re
 }
 
@@ -154,26 +212,26 @@ func (p *parser) maybeConcat(r rune, flags Flags) bool {
 	if n < 2 {
 		return false
 	}
-	// 到了这里,栈中至少有2项
-	re1 := p.stack[n-1] // 获取最后2项
+
+	re1 := p.stack[n-1]
 	re2 := p.stack[n-2]
 	if re1.Op != OpLiteral || re2.Op != OpLiteral || re1.Flags&FoldCase != re2.Flags&FoldCase {
 		return false
 	}
-	// 两个正则节点都是字面量且大小写折叠flag是一样的
+
 	// Push re1 into re2.
-	re2.Rune = append(re2.Rune, re1.Rune...) // 字符合并给前项
+	re2.Rune = append(re2.Rune, re1.Rune...)
 
 	// Reuse re1 if possible.
-	if r >= 0 { // r有效
+	if r >= 0 {
 		re1.Rune = re1.Rune0[:1]
-		re1.Rune[0] = r // 将r保存到re1.Rune[0]中
+		re1.Rune[0] = r
 		re1.Flags = flags
 		return true
 	}
 
 	p.stack = p.stack[:n-1]
-	p.reuse(re1) // 不释放re1,而是将其保存在p.free中以便后续使用
+	p.reuse(re1)
 	return false // did not push r
 }
 
@@ -181,7 +239,7 @@ func (p *parser) maybeConcat(r rune, flags Flags) bool {
 func (p *parser) literal(r rune) {
 	re := p.newRegexp(OpLiteral)
 	re.Flags = p.flags
-	if p.flags&FoldCase != 0 { // 大小写折叠模式
+	if p.flags&FoldCase != 0 {
 		r = minFoldRune(r)
 	}
 	re.Rune0[0] = r
@@ -246,6 +304,7 @@ func (p *parser) repeat(op Op, min, max int, before, after, lastRepeat string) (
 	re.Sub = re.Sub0[:1]
 	re.Sub[0] = sub
 	p.stack[n-1] = re
+	p.checkHeight(re)
 
 	if op == OpRepeat && (min >= 2 || max >= 2) && !repeatIsValid(re, 1000) {
 		return "", &Error{ErrInvalidRepeatSize, before[:len(before)-len(after)]}
@@ -338,9 +397,9 @@ func cleanAlt(re *Regexp) {
 	switch re.Op {
 	case OpCharClass:
 		re.Rune = cleanClass(&re.Rune)
-		if len(re.Rune) == 2 && re.Rune[0] == 0 && re.Rune[1] == unicode.MaxRune { // 这个OpCharClass匹配所有的字符
+		if len(re.Rune) == 2 && re.Rune[0] == 0 && re.Rune[1] == unicode.MaxRune {
 			re.Rune = nil
-			re.Op = OpAnyChar // 替换为OpAnyChar
+			re.Op = OpAnyChar
 			return
 		}
 		if len(re.Rune) == 4 && re.Rune[0] == 0 && re.Rune[1] == '\n'-1 && re.Rune[2] == '\n'+1 && re.Rune[3] == unicode.MaxRune {
@@ -367,14 +426,14 @@ func (p *parser) collapse(subs []*Regexp, op Op) *Regexp {
 	re := p.newRegexp(op)
 	re.Sub = re.Sub0[:0]
 	for _, sub := range subs {
-		if sub.Op == op { // 相同的操作码就将子表达式全部放到Sub中
+		if sub.Op == op {
 			re.Sub = append(re.Sub, sub.Sub...)
 			p.reuse(sub)
 		} else {
 			re.Sub = append(re.Sub, sub)
 		}
 	}
-	if op == OpAlternate { // 因为正则中出现了)而调用的该函数
+	if op == OpAlternate {
 		re.Sub = p.factor(re.Sub)
 		if len(re.Sub) == 1 {
 			old := re
@@ -412,7 +471,7 @@ func (p *parser) factor(sub []*Regexp) []*Regexp {
 		// for out (len(out) <= start).
 		//
 		// Invariant: sub[start:i] consists of regexps that all begin
-		// with str as modified by strflags.
+		// with Str as modified by strflags.
 		var istr []rune
 		var iflags Flags
 		if i < len(sub) {
@@ -432,8 +491,8 @@ func (p *parser) factor(sub []*Regexp) []*Regexp {
 		}
 
 		// Found end of a run with common leading literal string:
-		// sub[start:i] all begin with str[0:len(str)], but sub[i]
-		// does not even begin with str[0].
+		// sub[start:i] all begin with Str[0:len(Str)], but sub[i]
+		// does not even begin with Str[0].
 		//
 		// Factor out common string and append factored expression to out.
 		if i == start {
@@ -693,6 +752,21 @@ func literalRegexp(s string, flags Flags) *Regexp {
 // Flags, and returns a regular expression parse tree. The syntax is
 // described in the top-level comment.
 func Parse(s string, flags Flags) (*Regexp, error) {
+	return parse(s, flags)
+}
+
+func parse(s string, flags Flags) (_ *Regexp, err error) {
+	defer func() {
+		switch r := recover(); r {
+		default:
+			panic(r)
+		case nil:
+			// ok
+		case ErrInternalError:
+			err = &Error{Code: ErrInternalError, Expr: s}
+		}
+	}()
+
 	if flags&Literal != 0 {
 		// Trivial parser for literal string.
 		if err := checkUTF8(s); err != nil {
@@ -704,26 +778,33 @@ func Parse(s string, flags Flags) (*Regexp, error) {
 	// Otherwise, must do real work.
 	var (
 		p          parser
-		err        error
 		c          rune
 		op         Op
 		lastRepeat string
 	)
 	p.flags = flags
 	p.wholeRegexp = s
-	t := s // 待匹配的表达式
+	t := s
 	for t != "" {
 		repeat := ""
 	BigSwitch:
 		switch t[0] {
+		case '@':
+			if len(t) >= 2 && t[1] == '{' {
+				if t, err = p.parseVar(t, OpRegVar); err != nil {
+					return nil, err
+				}
+				break BigSwitch
+			}
+			fallthrough
 		default:
 			if c, t, err = nextRune(t); err != nil {
 				return nil, err
 			}
-			p.literal(c) // 普通的字面量
+			p.literal(c)
 
 		case '(':
-			if p.flags&PerlX != 0 && len(t) >= 2 && t[1] == '?' { // 至少有(?,表示这是一个标识flag的组
+			if p.flags&PerlX != 0 && len(t) >= 2 && t[1] == '?' {
 				// Flag changes and non-capturing groups.
 				if t, err = p.parsePerlFlags(t); err != nil {
 					return nil, err
@@ -751,12 +832,18 @@ func Parse(s string, flags Flags) (*Regexp, error) {
 			}
 			t = t[1:]
 		case '$':
-			if p.flags&OneLine != 0 {
-				p.op(OpEndText).Flags |= WasDollar
+			if len(t) >= 2 && t[1] == '{' {
+				if t, err = p.parseVar(t, OpStringVar); err != nil {
+					return nil, err
+				}
 			} else {
-				p.op(OpEndLine)
+				if p.flags&OneLine != 0 {
+					p.op(OpEndText).Flags |= WasDollar
+				} else {
+					p.op(OpEndLine)
+				}
+				t = t[1:]
 			}
-			t = t[1:]
 		case '.':
 			if p.flags&DotNL != 0 {
 				p.op(OpAnyChar)
@@ -824,13 +911,7 @@ func Parse(s string, flags Flags) (*Regexp, error) {
 				case 'Q':
 					// \Q ... \E: the ... is always literals
 					var lit string
-					if i := strings.Index(t, `\E`); i < 0 {
-						lit = t[2:]
-						t = ""
-					} else {
-						lit = t[2:i]
-						t = t[i+2:]
-					}
+					lit, t, _ = strings.Cut(t[2:], `\E`)
 					for lit != "" {
 						c, rest, err := nextRune(lit)
 						if err != nil {
@@ -956,7 +1037,7 @@ func (p *parser) parsePerlFlags(s string) (rest string, err error) {
 	// In both the open source world (via Code Search) and the
 	// Google source tree, (?P<expr>name) is the dominant form,
 	// so that's the one we implement. One is enough.
-	if len(t) > 4 && t[2] == 'P' && t[3] == '<' { // (?P<  开头
+	if len(t) > 4 && t[2] == 'P' && t[3] == '<' {
 		// Pull out name.
 		end := strings.IndexRune(t, '>')
 		if end < 0 {
@@ -1020,16 +1101,16 @@ Loop:
 			sign = -1
 			// Invert flags so that | above turn into &^ and vice versa.
 			// We'll invert flags again before using it below.
-			flags = ^flags // 将之前的flags都置反
+			flags = ^flags
 			sawFlag = false
 
 		// End of flags, starting group or not.
 		case ':', ')':
 			if sign < 0 {
-				if !sawFlag { // 出现这种情况表示出现了-符号将flags取反了
+				if !sawFlag {
 					break Loop
 				}
-				flags = ^flags // 到这里表示-符号出现了2次
+				flags = ^flags
 			}
 			if c == ':' {
 				// Open new group
@@ -1137,22 +1218,22 @@ func (p *parser) parseVerticalBar() error {
 // to reduce the amount of copying.
 func mergeCharClass(dst, src *Regexp) {
 	switch dst.Op {
-	case OpAnyChar: // 匹配所有的字符
+	case OpAnyChar:
 		// src doesn't add anything.
-	case OpAnyCharNotNL: // 匹配除换行外所有的字符
+	case OpAnyCharNotNL:
 		// src might add \n
-		if matchRune(src, '\n') { // src匹配换行的话
-			dst.Op = OpAnyChar // . | \n 这种情况其实就是匹配所有字符
+		if matchRune(src, '\n') {
+			dst.Op = OpAnyChar
 		}
-	case OpCharClass: // 每2个元素视为一个匹配的范围
+	case OpCharClass:
 		// src is simpler, so either literal or char class
 		if src.Op == OpLiteral {
 			dst.Rune = appendLiteral(dst.Rune, src.Rune[0], src.Flags)
-		} else { // src也是一个OpCharClass
+		} else {
 			dst.Rune = appendClass(dst.Rune, src.Rune)
 		}
 	case OpLiteral:
-		// both literal		因为dst的操作码是大于src的
+		// both literal
 		if src.Rune[0] == dst.Rune[0] && src.Flags == dst.Flags {
 			break
 		}
@@ -1169,13 +1250,13 @@ func (p *parser) swapVerticalBar() bool {
 	// If above and below vertical bar are literal or char class,
 	// can merge into a single char class.
 	n := len(p.stack)
-	if n >= 3 && p.stack[n-2].Op == opVerticalBar && isCharClass(p.stack[n-1]) && isCharClass(p.stack[n-3]) { // 字符序列 | 字符序列
+	if n >= 3 && p.stack[n-2].Op == opVerticalBar && isCharClass(p.stack[n-1]) && isCharClass(p.stack[n-3]) {
 		re1 := p.stack[n-1]
 		re3 := p.stack[n-3]
 		// Make re3 the more complex of the two.
 		if re1.Op > re3.Op {
 			re1, re3 = re3, re1
-			p.stack[n-3] = re3 // 复杂的表达式先进行正则匹配
+			p.stack[n-3] = re3
 		}
 		mergeCharClass(re3, re1)
 		p.reuse(re1)
@@ -1186,14 +1267,14 @@ func (p *parser) swapVerticalBar() bool {
 	if n >= 2 {
 		re1 := p.stack[n-1]
 		re2 := p.stack[n-2]
-		if re2.Op == opVerticalBar { // | expr
-			if n >= 3 { // expr | expr		这个时候,|左右两边都不全是字符序列
+		if re2.Op == opVerticalBar {
+			if n >= 3 {
 				// Now out of reach.
 				// Clean opportunistically.
-				cleanAlt(p.stack[n-3]) // 当p.stack[n-3]是字符序列的话或进行清理
+				cleanAlt(p.stack[n-3])
 			}
 			p.stack[n-2] = re1
-			p.stack[n-1] = re2 // 栈顶的情况变为expr expr |
+			p.stack[n-1] = re2
 			return true
 		}
 	}
@@ -1397,7 +1478,7 @@ func (p *parser) parseNamedClass(s string, r []rune) (out []rune, rest string, e
 		return
 	}
 	i += 2
-	name, s := s[0:i+2], s[i+2:] // [:name:], 之后的待解析的字符串
+	name, s := s[0:i+2], s[i+2:]
 	g := posixGroup[name]
 	if g.sign == 0 {
 		return nil, "", &Error{ErrInvalidCharRange, name}
@@ -1530,13 +1611,13 @@ func (p *parser) parseClass(s string) (rest string, err error) {
 	re.Rune = re.Rune0[:0]
 
 	sign := +1
-	if t != "" && t[0] == '^' { // ^符号开头,表示不匹配
+	if t != "" && t[0] == '^' {
 		sign = -1
 		t = t[1:]
 
 		// If character class does not match \n, add it here,
 		// so that negation later will do the right thing.
-		if p.flags&ClassNL == 0 { // 不允许匹配换行就添加对换行的匹配
+		if p.flags&ClassNL == 0 {
 			re.Rune = append(re.Rune, '\n', '\n')
 		}
 	}
@@ -1617,6 +1698,19 @@ func (p *parser) parseClass(s string) (rest string, err error) {
 	return t, nil
 }
 
+func (p *parser) parseVar(s string, op Op) (rest string, err error) {
+	re := p.newRegexp(op)
+	re.Flags = p.flags
+	end := strings.Index(s, "}")
+	if end < 0 {
+		return "", &Error{ErrMissingBrace, s}
+	}
+	re.Var = s[2:end]
+	rest = s[end+1:]
+	p.push(re)
+	return
+}
+
 // cleanClass sorts the ranges (pairs of elements of r),
 // merges them, and eliminates duplicates.
 func cleanClass(rp *[]rune) []rune {
@@ -1630,17 +1724,17 @@ func cleanClass(rp *[]rune) []rune {
 	}
 
 	// Merge abutting, overlapping.
-	w := 2 // write index	// 从第一个开始进行比较
+	w := 2 // write index
 	for i := 2; i < len(r); i += 2 {
-		lo, hi := r[i], r[i+1] // 获取一个range
-		if lo <= r[w-1]+1 {    // lo <= lhi+1
+		lo, hi := r[i], r[i+1]
+		if lo <= r[w-1]+1 {
 			// merge with previous range
-			if hi > r[w-1] { // hi > lhi
-				r[w-1] = hi // 这里表示通过上一个range覆盖了
+			if hi > r[w-1] {
+				r[w-1] = hi
 			}
 			continue
 		}
-		// new disjoint range    到这一步,r[i] > r[w-1]+1,自己最高的值小于别人最低的值
+		// new disjoint range
 		r[w] = lo
 		r[w+1] = hi
 		w += 2
@@ -1666,10 +1760,7 @@ func appendRange(r []rune, lo, hi rune) []rune {
 	n := len(r)
 	for i := 2; i <= 4; i += 2 { // twice, using i=2, i=4
 		if n >= i {
-			rlo, rhi := r[n-i], r[n-i+1] // 获得在r中存储的初始范围
-			// hi<=rhi, hi+1>=rlo, 判断是否有重叠
-			// lo < hi, rlo < rhi
-			// lo有可能比rhi大1, rlo有可能比hi大1
+			rlo, rhi := r[n-i], r[n-i+1]
 			if lo <= rhi+1 && rlo <= hi+1 {
 				if lo < rlo {
 					r[n-i] = lo
@@ -1704,14 +1795,14 @@ func appendFoldedRange(r []rune, lo, hi rune) []rune {
 		// Range is outside folding possibilities.
 		return appendRange(r, lo, hi)
 	}
-	if lo < minFold { // 此时hi是大于minFold的
+	if lo < minFold {
 		// [lo, minFold-1] needs no folding.
-		r = appendRange(r, lo, minFold-1) // [lo, minFold-1] 添加进去,这是没有大小写折叠的区间
+		r = appendRange(r, lo, minFold-1)
 		lo = minFold
 	}
 	if hi > maxFold {
 		// [maxFold+1, hi] needs no folding.
-		r = appendRange(r, maxFold+1, hi) // [maxFold+1, hi] 添加进去,这是没有大小写折叠的区间
+		r = appendRange(r, maxFold+1, hi)
 		hi = maxFold
 	}
 
@@ -1887,7 +1978,6 @@ func checkUTF8(s string) error {
 	return nil
 }
 
-// 提取一个token并将t的头指针向后推这个token的字节数
 func nextRune(s string) (c rune, t string, err error) {
 	c, size := utf8.DecodeRuneInString(s)
 	if c == utf8.RuneError && size == 1 {

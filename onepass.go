@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // "One-pass" regexp execution.
@@ -55,7 +56,7 @@ func onePassPrefix(p *syntax.Prog) (prefix string, complete bool, pc uint32) {
 
 	// Have prefix; gather characters.
 	var buf strings.Builder
-	for iop(i) == syntax.InstRune && len(i.Rune) == 1 && syntax.Flags(i.Arg)&syntax.FoldCase == 0 {
+	for iop(i) == syntax.InstRune && len(i.Rune) == 1 && syntax.Flags(i.Arg)&syntax.FoldCase == 0 && i.Rune[0] != utf8.RuneError {
 		buf.WriteRune(i.Rune[0])
 		pc, i = i.Out, &p.Inst[i.Out]
 	}
@@ -70,7 +71,7 @@ func onePassPrefix(p *syntax.Prog) (prefix string, complete bool, pc uint32) {
 // OnePassNext selects the next actionable state of the prog, based on the input character.
 // It should only be called when i.Op == InstAlt or InstAltMatch, and from the one-pass machine.
 // One of the alternates may ultimately lead without input to end of line. If the instruction
-// is InstAltMatch the path to the InstMatch is in i.Out, the normal node in i.Next.
+// is InstAltMatch the path to the InstMatch is in i.Out, the normal Node in i.Next.
 func onePassNext(i *onePassInst, r rune) uint32 {
 	next := i.MatchRunePos(r)
 	if next >= 0 {
@@ -145,7 +146,7 @@ func newQueue(size int) (q *queueOnePass) {
 // mergeRuneSets merges two non-intersecting runesets, and returns the merged result,
 // and a NextIp array. The idea is that if a rune matches the OnePassRunes at index
 // i, NextIp[i/2] is the target. If the input sets intersect, an empty runeset and a
-// NextIp array with the single element mergeFailed is returned.
+// NextIp array with the single Element mergeFailed is returned.
 // The code assumes that both inputs contain ordered and non-intersecting rune pairs.
 const mergeFailed = uint32(0xffffffff)
 

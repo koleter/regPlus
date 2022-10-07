@@ -6,7 +6,7 @@ package regexp
 
 import (
 	"reflect"
-	"regexp/syntax"
+	"regPlus/syntax"
 	"strings"
 	"testing"
 )
@@ -142,7 +142,7 @@ var onePassTests = []struct {
 	{`^(?:(a)|(?:a*))$`, false},
 	{`^(?:(?:(?:.(?:$))?))$`, true},
 	{`^abcd$`, true},
-	{`^(?:(?:a{0,})*?)$`, true},
+	{`^(?:(?:a{0,})*?)$`, false},
 	{`^(?:(?:a+)*)$`, true},
 	{`^(?:(?:a|(?:aa)))$`, true},
 	{`^(?:[^\s\S])$`, true},

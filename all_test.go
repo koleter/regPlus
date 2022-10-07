@@ -6,7 +6,7 @@ package regexp
 
 import (
 	"reflect"
-	"regexp/syntax"
+	"regPlus/syntax"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -372,6 +372,9 @@ var literalPrefixTests = []MetaTest{
 	{`^^0$$`, ``, ``, false},
 	{`^$^$`, ``, ``, false},
 	{`$$0^^`, ``, ``, false},
+	{`a\x{fffd}b`, ``, `a`, false},
+	{`\x{fffd}b`, ``, ``, false},
+	{"\ufffd", ``, ``, false},
 }
 
 func TestQuoteMeta(t *testing.T) {
