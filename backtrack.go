@@ -48,16 +48,19 @@ type bitState struct {
 
 //var bitStatePool sync.Pool
 
-func newBitState(re *Regexp) *bitState {
+func newBitState() *bitState {
 	return new(bitState)
 }
 
-func freeBitState(b *bitState) {
-	for _, job := range b.jobs {
-		if job.f != nil {
-			job.f()
+func (re *Regexp) freeBitState() {
+	b := re.b
+	jobs := b.jobs
+	for i := len(b.jobs) - 1; i >= 0; i-- {
+		if jobs[i].f != nil {
+			jobs[i].f()
 		}
 	}
+	re.finalFree()
 }
 
 // maxBitStateLen returns the maximum length of a string to search with
@@ -286,6 +289,12 @@ Loop:
 				}
 			}
 
+			for _, regNode := range re.regVar {
+				if regNode.count < regNode.min {
+					continue Loop
+				}
+			}
+
 			// We found a match. If the caller doesn't care
 			// where the match is, no point going further.
 			if len(b.cap) == 0 {
@@ -350,15 +359,46 @@ Loop:
 			}
 			continue
 		case syntax.InstRegVar:
+			type researchReg struct {
+				re           *Regexp
+				b            *bitState
+				maxSearchEnd int
+			}
 			if arg {
 				arg = false
 				switch node := curjob.aux.(type) {
+				case *researchReg:
+					regexp := node.re
+					bit := node.b
+					end := b.end
+
+					if !regexp.run(bit, i, regexp.longest) {
+						for j := node.maxSearchEnd; j < end; j++ {
+							bit = regexp.backtrackForRegVar(i, j, end, 2, []int{})
+							if bit != nil {
+								node.b = bit
+								goto match
+							}
+						}
+						continue
+					}
+				match:
+					if bit.cap[1] > node.maxSearchEnd {
+						node.maxSearchEnd = bit.cap[1]
+					}
+					if bit.cap[0] == bit.cap[1] {
+						node.maxSearchEnd++
+					}
+					b.jobs = append(b.jobs, job{pc: pc, arg: true, pos: pos, aux: node})
+					pc = inst.Out
+					pos = bit.cap[1]
+					goto CheckAndLoop
 				case *Element:
 					for ; node != nil; node = node.Next() {
 						regexp := node.Value.(*Regexp)
-						bit := new(bitState)
-						bit.reset(regexp.prog, b.end-pos, 2)
-						if !regexp.run(bit, i, longest) {
+
+						bit := regexp.backtrackForRegVar(i, pos, b.end, 2, []int{})
+						if bit == nil {
 							continue
 						}
 						b.jobs = append(b.jobs, job{pc: pc, arg: true, pos: pos, aux: node.Next()})
@@ -376,6 +416,9 @@ Loop:
 							b.jobs = append(b.jobs, job{f: func() {
 								l.root.InsertElementBefore(node)
 							}})
+						}
+						if bit.cap[0] != bit.cap[1] {
+							b.jobs = append(b.jobs, job{pc: pc, arg: true, pos: pos, aux: &researchReg{re: regexp, b: bit, maxSearchEnd: bit.matchcap[1]}})
 						}
 						node.RemoveSelf()
 						pc = inst.Out
@@ -415,9 +458,11 @@ func (re *Regexp) backtrack(ib []byte, is string, pos int, ncap int, dstCap []in
 		return nil
 	}
 
-	b := newBitState(re)
+	b := newBitState()
 	i, end := b.inputs.init(nil, ib, is)
 	b.reset(re.prog, end, ncap)
+
+	re.b = b
 
 	// Anchored search must start at the beginning of the input
 	if startCond&syntax.EmptyBeginText != 0 {
@@ -425,7 +470,7 @@ func (re *Regexp) backtrack(ib []byte, is string, pos int, ncap int, dstCap []in
 			b.cap[0] = pos
 		}
 		if !re.tryBacktrack(b, i, uint32(re.prog.Start), pos) {
-			freeBitState(b)
+			re.freeBitState()
 			return nil
 		}
 	} else {
@@ -442,7 +487,7 @@ func (re *Regexp) backtrack(ib []byte, is string, pos int, ncap int, dstCap []in
 				// Match requires literal prefix; fast search for it.
 				advance := i.index(re, pos)
 				if advance < 0 {
-					freeBitState(b)
+					re.freeBitState()
 					return nil
 				}
 				pos += advance
@@ -457,12 +502,67 @@ func (re *Regexp) backtrack(ib []byte, is string, pos int, ncap int, dstCap []in
 			}
 			_, width = i.step(pos)
 		}
-		freeBitState(b)
+		re.freeBitState()
 		return nil
 	}
 
 Match:
 	dstCap = append(dstCap, b.matchcap...)
-	freeBitState(b)
+	re.freeBitState()
 	return dstCap
+}
+
+// backtrack runs a backtracking search of prog on the input starting at pos.
+func (re *Regexp) backtrackForRegVar(i input, pos, end int, ncap int, dstCap []int) *bitState {
+	startCond := re.cond
+	if startCond == ^syntax.EmptyOp(0) { // impossible
+		return nil
+	}
+
+	b := newBitState()
+	b.reset(re.prog, end, ncap)
+	re.b = b
+
+	// Anchored search must start at the beginning of the input
+	if startCond&syntax.EmptyBeginText != 0 {
+		if len(b.cap) > 0 {
+			b.cap[0] = pos
+		}
+		if !re.tryBacktrack(b, i, uint32(re.prog.Start), pos) {
+			return nil
+		}
+	} else {
+
+		// Unanchored search, starting from each possible text position.
+		// Notice that we have to try the empty string at the end of
+		// the text, so the loop condition is pos <= end, not pos < end.
+		// This looks like it's quadratic in the size of the text,
+		// but we are not clearing visited between calls to TrySearch,
+		// so no work is duplicated and it ends up still being linear.
+		width := -1
+		for ; pos <= end && width != 0; pos += width {
+			if len(re.prefix) > 0 {
+				// Match requires literal prefix; fast search for it.
+				advance := i.index(re, pos)
+				if advance < 0 {
+					return nil
+				}
+				pos += advance
+			}
+
+			if len(b.cap) > 0 {
+				b.cap[0] = pos
+			}
+			if re.tryBacktrack(b, i, uint32(re.prog.Start), pos) {
+				// Match must be leftmost; done.
+				goto Match
+			}
+			_, width = i.step(pos)
+		}
+		return nil
+	}
+
+Match:
+	dstCap = append(dstCap, b.matchcap...)
+	return b
 }

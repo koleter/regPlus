@@ -7,7 +7,7 @@ import (
 )
 
 func TestList_Insert(t *testing.T) {
-	list := &List{}
+	list := &list{}
 	back := list.PushBack(3)
 	front := list.PushFront(1)
 	list.PushBack(5)
@@ -25,7 +25,7 @@ func TestList_Insert(t *testing.T) {
 }
 
 func TestList_CheckCycle(t *testing.T) {
-	list := &List{}
+	list := &list{}
 	list.PushFront(2)
 	assert.Equal(t, list.Front(), list.Back())
 }

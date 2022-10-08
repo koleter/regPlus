@@ -104,11 +104,14 @@ type Regexp struct {
 	longest bool // whether regexp prefers leftmost-longest match
 
 	stringVar map[string]*StringTreeNode
-	regVar    map[string]*RegNode
+
+	// these field is used for regVar
+	regVar map[string]*RegNode
+	b      *bitState
 }
 
 type RegNode struct {
-	l               List
+	l               list
 	min, max, count int
 }
 
@@ -137,7 +140,7 @@ func (re *Regexp) getRegNode(variable string) *RegNode {
 	}
 	regNode := re.regVar[variable]
 	if regNode == nil {
-		regNode = &RegNode{l: List{}, max: math.MaxInt64}
+		regNode = &RegNode{l: list{}, max: math.MaxInt64}
 		re.regVar[variable] = regNode
 	}
 	return regNode
@@ -1363,5 +1366,14 @@ func (re *Regexp) Split(s string, n int) []string {
 func (re *Regexp) reset() {
 	for _, node := range re.stringVar {
 		node.count = 0
+	}
+}
+
+func (re *Regexp) finalFree() {
+	for _, reg := range re.regVar {
+		for node := reg.l.Front(); node != nil; node = node.Next() {
+			regexp := node.Value.(*Regexp)
+			regexp.freeBitState()
+		}
 	}
 }

@@ -1,8 +1,6 @@
 package regexp
 
 import (
-	"container/list"
-	"fmt"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
@@ -104,60 +102,138 @@ func TestRegexp_RegisterStringVar_WithLimit(t *testing.T) {
 }
 
 func TestRegexp_RegisterStringVar_FindAllString(t *testing.T) {
+	cases := []struct {
+		name   string
+		text   string
+		expect []string
+	}{
+		{
+			"No.1", "a(aad)b(aad)cd(hello)fg", []string{"(aad)", "(aad)", "(hello)"},
+		},
+		{
+			"No.2", "a(aad)b(hallo)cd(hello)fg", []string{"(aad)", "(hallo)", "(hello)"},
+		},
+	}
+
 	mustCompile := MustCompile("\\(${word}\\)")
 	mustCompile.RegisterStringVar("word", []string{"hello", "hallo", "world", "aad", "aqw"}...)
-	submatch := mustCompile.FindAllString("a(aad)b(aad)cd(hello)fg", -1)
-	assert.Equal(t, submatch, []string{"(aad)", "(aad)", "(hello)"})
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			submatch := mustCompile.FindAllString(tt.text, -1)
+			assert.Equal(t, submatch, tt.expect)
+		})
+	}
 }
 
 func TestRegexp_RegisterRegVar(t *testing.T) {
 	cases := []struct {
 		name   string
 		reg    string
-		text   []string
+		text   string
 		word   string
 		regs   []*Regexp
-		expect []string
+		expect string
 	}{
 		{
-			"No.1", "a@{var}b@{var}", []string{"a302bacR"}, "var", []*Regexp{MustCompile("[a-z]*"), MustCompile("\\d+")}, []string{""},
+			"No.1", "a@{var}2b@{var}", "a302bacR", "var", []*Regexp{MustCompile("\\d+"), MustCompile("[a-z]*")}, "a302bac",
+		},
+		{
+			"No.2", "a@{var}2b@{var}", "a302bacR", "var", []*Regexp{MustCompile("[a-z]*"), MustCompile("\\d+")}, "a302bac",
+		},
+		{
+			"No.3", "a@{var}2b@{var}", "a502q302bacR", "var", []*Regexp{MustCompile("\\d+"), MustCompile("[a-z]*")}, "a502q302bac",
+		},
+		{
+			"No.4", "a@{var}2b@{var}", "a502q302bacR", "var", []*Regexp{MustCompile("^\\d+"), MustCompile("[a-z]*")}, "",
 		},
 	}
 
 	for _, tt := range cases {
-		mustCompile := MustCompile(tt.reg)
-		mustCompile.RegisterRegVar(tt.word, tt.regs...)
-		for i, str := range tt.text {
-			t.Run(fmt.Sprintf("%s#%d", tt.name, i), func(t *testing.T) {
-				findString := mustCompile.FindString(str)
-				assert.Equal(t, findString, tt.expect[i])
-			})
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			mustCompile := MustCompile(tt.reg)
+			mustCompile.RegisterRegVar(tt.word, tt.regs...)
+			findString := mustCompile.FindString(tt.text)
+			assert.Equal(t, findString, tt.expect)
+		})
+
 	}
 }
 
-func TestOnePass(t *testing.T) {
-	mustCompile := MustCompile("asdfg")
-	findString := mustCompile.FindString("asdfe")
-	fmt.Println(findString)
-}
+func TestRegexp_RegisterRegVarWithLimit(t *testing.T) {
+	cases := []struct {
+		name     string
+		reg      string
+		min, max int
+		text     string
+		word     string
+		regs     []*Regexp
+		expect   []string
+	}{
+		{
+			"No.1", "a(@{var})2b(@{var})", 2, 3, "a302bacR", "var", []*Regexp{MustCompile("\\d+"), MustCompile("[a-z]*")}, []string{"a302bac", "30", "ac"},
+		},
+		{
+			"No.2", "a(@{var})2b(@{var})", 3, 3, "a302bacR", "var", []*Regexp{MustCompile("\\d+"), MustCompile("[a-z]*")}, nil,
+		},
+		{
+			"No.3", "a(@{var})2b(@{var})", 2, 3, "a302bacR", "var", []*Regexp{MustCompile("\\d+"), MustCompile("[a-z]*")}, []string{"a302bac", "30", "ac"},
+		},
+		{
+			"No.4", "a(@{var})2b(@{var})", 2, 3, "a30002bacR", "var", []*Regexp{MustCompile("\\d+?"), MustCompile("[a-z]*")}, []string{"a30002bac", "3000", "ac"},
+		},
+	}
 
-func TestList(t *testing.T) {
-	l := list.List{}
-	back := l.PushBack(3)
-	l.InsertBefore(1, back)
-	for node := l.Front(); node != nil; node = node.Next() {
-		val := node.Value
-		fmt.Println(val)
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			mustCompile := MustCompile(tt.reg)
+			mustCompile.RegisterRegVar(tt.word, tt.regs...)
+			mustCompile.SetRegVarLimit(tt.word, tt.min, tt.max)
+			findString := mustCompile.FindStringSubmatch(tt.text)
+			assert.Equal(t, findString, tt.expect)
+		})
+
 	}
 }
 
-func TestReuseReg(t *testing.T) {
-	mustCompile := MustCompile(".*(\\d+)")
+// 以一条sql的where条件举例,要求数量num必须设置查询的上界和下界
+func TestRegVarInSqlMatch(t *testing.T) {
+	cases := []struct {
+		name   string
+		text   string
+		expect string
+	}{
+		{
+			"No.1", "where num >= 3", "",
+		},
+		{
+			"No.2", "where num > 1 and num <= 6", "where num > 1 and num <= 6",
+		},
+		{
+			"No.3", "where num > 4 and num < 9", "where num > 4 and num < 9",
+		},
+		{
+			"No.4", "where 10 < num and num <= 40", "where 10 < num and num <= 40",
+		},
+		{
+			"No.5", "where 10 < num and num > 40", "",
+		},
+	}
+	mustCompile := MustCompile("where +@{board}.*@{board}.*")
+	regexp := MustCompile("(@{lower}.*)+")
+	regexp.RegisterRegVar("lower", MustCompile("num +<"), MustCompile("> +num"))
+	regexp.SetRegVarLimit("lower", 1, 1)
 
-	findString := mustCompile.FindAllStringSubmatch("w2012", -1)
-	fmt.Println(findString)
+	r := MustCompile("(@{higher}.*)+")
+	r.RegisterRegVar("higher", MustCompile("num +>"), MustCompile("< +num"))
+	r.SetRegVarLimit("higher", 1, 1)
 
-	findString = mustCompile.FindAllStringSubmatch("w2012", -1)
-	fmt.Println(findString)
+	mustCompile.RegisterRegVar("board", regexp, r)
+	mustCompile.SetRegVarLimit("board", 2, 2)
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			findString := mustCompile.FindString(tt.text)
+			assert.Equal(t, findString, tt.expect)
+		})
+	}
 }
