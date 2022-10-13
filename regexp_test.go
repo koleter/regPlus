@@ -54,7 +54,6 @@ func TestRegexp_RegisterStringVar(t *testing.T) {
 	}
 }
 
-// 测试正则的stringVar的匹配次数限制功能
 func TestRegexp_RegisterStringVar_WithLimit(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -82,8 +81,11 @@ func TestRegexp_RegisterStringVar_WithLimit(t *testing.T) {
 			"No.5", "a${word}?", "aaqw", "word", 0, 0, []string{"hello", "hallo", "world", "aad", "aqw"}, "a", "",
 		},
 		{
-			// 共5处位置,5个字符串在随机位置出现,可以出现也可以不出现,出现的总次数为3次
+			// 5 positions, 5 strings appear in random positions, may or may not appear, the total number of times the string appears is 3
 			"No.6", "a${word}?b${word}?c${word}?d${word}?e${word}?", "aaqwbchellodaadeapple", "word", 3, 3, []string{"hello", "hallo", "world", "aad", "aqw"}, "aaqwbchellodaade", "",
+		},
+		{
+			"No.7", "${word}*", "abdec", "word", 2, 4, []string{"a", "b", "c", "d", "e"}, "abde", "",
 		},
 	}
 	for _, tt := range cases {
@@ -195,7 +197,7 @@ func TestRegexp_RegisterRegVarWithLimit(t *testing.T) {
 	}
 }
 
-// 以一条sql的where条件举例,要求数量num必须设置查询的上界和下界
+// Taking a SQL where condition as an example, it is required that num must set the upper and lower bounds of the query
 func TestRegVarInSqlMatch(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -221,14 +223,11 @@ func TestRegVarInSqlMatch(t *testing.T) {
 	mustCompile := MustCompile("where +@{board}.*@{board}.*")
 	regexp := MustCompile("(@{lower}.*)+")
 	regexp.RegisterRegVar("lower", MustCompile("num +<"), MustCompile("> +num"))
-	regexp.SetRegVarLimit("lower", 1, 1)
 
-	r := MustCompile("(@{higher}.*)+")
-	r.RegisterRegVar("higher", MustCompile("num +>"), MustCompile("< +num"))
-	r.SetRegVarLimit("higher", 1, 1)
+	r := MustCompile("(@{upper}.*)+")
+	r.RegisterRegVar("upper", MustCompile("num +>"), MustCompile("< +num"))
 
 	mustCompile.RegisterRegVar("board", regexp, r)
-	mustCompile.SetRegVarLimit("board", 2, 2)
 
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

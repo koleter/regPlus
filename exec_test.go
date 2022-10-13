@@ -368,7 +368,12 @@ Reading:
 		if line[0] == '#' || line[0] == '\n' {
 			continue Reading
 		}
-		line = line[:len(line)-1]
+		n := len(line)
+		if line[n-2:n] == "\r\n" {
+			line = line[:n-2]
+		} else {
+			line = line[:n-1]
+		}
 		field := notab.FindAllString(line, -1)
 		for i, f := range field {
 			if f == "NULL" {
