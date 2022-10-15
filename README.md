@@ -29,7 +29,7 @@ Compile.SetStringVarLimit("word", 2, 4)
 This regular expression can match "ab", "bc", "ea", "bce", "deac", "dcab", etc.
 
 * ## reg variable
-In regular expressions, you can use function RegisterRegVar to register a reg variable. Reg variable can be marked with a sequence of characters
+You can use function RegisterRegVar to register a reg variable. Reg variable can be marked with a sequence of characters
 like *@{word}* . It is used in a similar way to string variable. It is not replaced by 
 string, but the regular expressions.
 
