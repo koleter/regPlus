@@ -5,8 +5,8 @@
 package regexp
 
 import (
+	"github.com/koleter/regPlus/syntax"
 	"reflect"
-	"regPlus/syntax"
 	"strings"
 	"testing"
 )

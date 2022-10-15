@@ -5,7 +5,7 @@
 package regexp
 
 import (
-	"regPlus/syntax"
+	"github.com/koleter/regPlus/syntax"
 	"sort"
 	"strings"
 	"unicode"

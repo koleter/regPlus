@@ -15,7 +15,7 @@
 package regexp
 
 import (
-	"regPlus/syntax"
+	"github.com/koleter/regPlus/syntax"
 )
 
 // A job is an entry on the backtracker's job stack. It holds

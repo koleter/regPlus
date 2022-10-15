@@ -69,9 +69,9 @@ package regexp
 
 import (
 	"bytes"
+	"github.com/koleter/regPlus/syntax"
 	"io"
 	"math"
-	"regPlus/syntax"
 	"strconv"
 	"strings"
 	"sync"
